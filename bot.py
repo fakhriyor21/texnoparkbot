@@ -36,6 +36,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+if os.environ.get("DYNO"):
+    log.info("Heroku muhitida ishlayapti (DYNO=%s)", os.environ.get("DYNO"))
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 _ADMIN_RAW = os.environ.get("ADMIN_IDS", "").strip()
 ADMIN_IDS: set[int] = set()
