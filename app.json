@@ -1,0 +1,16 @@
+{
+  "name": "Guliston Texnopark Bot",
+  "description": "Guliston Yoshlar Texnoparki — Telegram anketa boti (aiogram)",
+  "repository": "https://github.com/fakhriyor21/texnoparkbot",
+  "keywords": ["telegram", "bot", "aiogram", "python"],
+  "env": {
+    "BOT_TOKEN": {
+      "description": "@BotFather dan olingan bot token",
+      "required": true
+    },
+    "ADMIN_IDS": {
+      "description": "Admin Telegram ID (bir nechta bo'lsa vergul bilan: 111,222)",
+      "required": true
+    }
+  }
+}
