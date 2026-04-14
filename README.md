@@ -69,6 +69,8 @@ heroku config:set ADMIN_IDS="TELEGRAM_ID" -a APP
 
 `BOT_TOKEN` bo‘lmasa, dyno ishga tushganda `bot.py` darhol chiqib ketadi.
 
+**Xavfsizlik:** tokenni **`bot.py` yoki GitHubga qo‘ymang**. Faqat **Heroku → Config Vars** va mahalliy **`.env`** (`.gitignore`da).
+
 ### 4. Deploy
 
 ```bash
