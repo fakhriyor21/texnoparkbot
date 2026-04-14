@@ -545,7 +545,11 @@ async def main() -> None:
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        print("BOT_TOKEN .env faylida yo'q.", file=sys.stderr)
+        print(
+            "BOT_TOKEN topilmadi. Mahalliy: .env faylida yozing. "
+            "Heroku: Dashboard → Settings → Config Vars → BOT_TOKEN qo'shing.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     import asyncio
 
