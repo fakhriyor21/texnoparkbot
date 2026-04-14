@@ -3,7 +3,6 @@
   "description": "Guliston Yoshlar Texnoparki — Telegram anketa boti (aiogram)",
   "repository": "https://github.com/fakhriyor21/texnoparkbot",
   "keywords": ["telegram", "bot", "aiogram", "python"],
-  "stack": "heroku-24",
   "buildpacks": [
     { "url": "heroku/python" }
   ],

@@ -16,6 +16,20 @@
 
 Kerak: [Heroku akkaunt](https://signup.heroku.com/), [Heroku CLI](https://devcenter.heroku.com/articles/heroku-cli), `git`.
 
+### 0) Eng ko‘p xato: noto‘g‘ri buildpack (Node.js)
+
+Agar buildda **`heroku/nodejs`** va **`package.json` topilmadi** degan xato chiqsa — ilovada **Python** buildpack yo‘q.
+
+**Buni bir marta bajaring** (`APP` o‘rniga o‘z ilova nomingiz):
+
+```bash
+heroku buildpacks:clear -a APP
+heroku buildpacks:set heroku/python -a APP
+heroku buildpacks -a APP
+```
+
+Chiqishi kerak: **`heroku/python`**.
+
 ### 1. Login
 
 ```bash
@@ -24,93 +38,81 @@ heroku login
 
 ### 2. Ilova yaratish
 
-Loyiha papkasida:
-
 ```bash
 cd texnoparkbot
 heroku create sizning-unikal-app-nomingiz
 ```
 
-Bu `heroku` nomli `git remote` qo‘shadi. Tekshirish: `git remote -v`.
+Tekshirish: `git remote -v` ( `heroku https://git.heroku.com/...` bo‘lishi kerak).
+
+Agar `heroku` remote yo‘q bo‘lsa:
+
+```bash
+heroku git:remote -a sizning-unikal-app-nomingiz
+```
 
 ### 3. Config Vars (majburiy)
 
-Dashboard: ilova → **Settings → Config Vars → Reveal Config Vars**, quyidagilarni qo‘shing:
+Dashboard: **Settings → Config Vars**:
 
 | Kalit | Qiymat |
 |--------|--------|
 | `BOT_TOKEN` | @BotFather token |
 | `ADMIN_IDS` | Raqam yoki `111,222` |
 
-Yoki CLI (PowerShellda ham ishlaydi):
+CLI:
 
 ```bash
-heroku config:set BOT_TOKEN="TOKEN_BU_YERGA" -a sizning-unikal-app-nomingiz
-heroku config:set ADMIN_IDS="TELEGRAM_ID" -a sizning-unikal-app-nomingiz
+heroku config:set BOT_TOKEN="TOKEN_BU_YERGA" -a APP
+heroku config:set ADMIN_IDS="TELEGRAM_ID" -a APP
 ```
 
-`BOT_TOKEN` bo‘lmasa, dyno ishga tushganda `bot.py` chiqib ketadi.
+`BOT_TOKEN` bo‘lmasa, dyno ishga tushganda `bot.py` darhol chiqib ketadi.
 
-### 4. Kod yuborish (deploy)
-
-GitHub ulanish bo‘lsa va `origin` da loyiha bo‘lsa:
+### 4. Deploy
 
 ```bash
 git push heroku main
 ```
 
-Agar sizning tarmog‘ingiz `master` bo‘lsa:
+Agar tarmoq `master`: `git push heroku master:main` yoki `git branch -M main`.
+
+### 5. Worker (majburiy)
 
 ```bash
-git push heroku master:main
+heroku ps:scale worker=1 -a APP
 ```
 
-yoki `git branch -M main` qilib keyin `git push heroku main`.
+Keraksiz `web` bo‘lsa: `heroku ps:scale web=0 worker=1 -a APP`.
 
-### 5. Worker dinamosini yoqish (majburiy)
-
-Bu bot **worker** sifatida ishlaydi:
+### 6. Loglar
 
 ```bash
-heroku ps:scale worker=1 -a sizning-unikal-app-nomingiz
+heroku logs --tail -a APP
 ```
 
-`web` dinamosi kerak emas. Agar avtomatik `web` bo‘lsa:
-
-```bash
-heroku ps:scale web=0 worker=1 -a sizning-unikal-app-nomingiz
-```
-
-### 6. Tekshirish
-
-```bash
-heroku logs --tail -a sizning-unikal-app-nomingiz
-```
-
-Logda `Bot ishga tushmoqda (aiogram)...` va `Start polling` ko‘rinishi kerak. Birinchi marta `Heroku muhitida ishlayapti` qatori bo‘lishi mumkin.
-
-Telegramda botga `/start` yuboring.
+Kutiladi: `Bot ishga tushmoqda (aiogram)...`, `Start polling`.
 
 ---
 
 ### Muammolarni bartaraf etish
 
-| Muammo | Nima qilish |
-|--------|-------------|
-| **Build: Python topilmadi** | `runtime.txt` dagi versiyani [Heroku qo‘llab-quvvatlash](https://devcenter.heroku.com/articles/python-support) bo‘yicha o‘zgartiring (masalan `python-3.12.7`). |
-| **R10 Boot timeout / crash** | `heroku logs --tail` — odatda `BOT_TOKEN` yo‘q yoki noto‘g‘ri. |
-| **Worker ishlamayapti** | `heroku ps` — `worker` `up` bo‘lishi kerak; `ps:scale worker=1` qayta bering. |
-| **Logo/profil xatosi** | `assets/bot_logo.png` bo‘lmasa ham bot ishlaydi; logda ogohlantirish bo‘ladi. |
+| Muammo | Yechim |
+|--------|--------|
+| **nodejs / package.json** | Yuqoridagi **0-qadam** — `buildpacks:set heroku/python`. |
+| **Python versiyasi** | Loyiha ildizida `.python-version` (`3.12`) — [Heroku Python](https://devcenter.heroku.com/articles/python-runtimes). |
+| **Crash / R10** | `heroku logs --tail` — `BOT_TOKEN` / `ADMIN_IDS` tekshiring. |
+| **Worker yo‘q** | `heroku ps` — `worker` `up`; `ps:scale worker=1`. |
 
-### SQLite (muhim)
+### SQLite
 
-Ma’lumotlar **`texnopark.db`** ichida. Heroku fayl tizimi **vaqtinchalik** — qayta deploy yoki dyno qayta ishga tushganda ma’lumot **yo‘qolishi mumkin**. Doimiy baza kerak bo‘lsa, keyinroq **Postgres** yoki boshqa DB ulash kerak.
+`texnopark.db` Herokuda **vaqtinchalik**; qayta deployda ma’lumot yo‘qolishi mumkin.
 
-### Deploy fayllari
+### Fayllar
 
 | Fayl | Vazifasi |
 |------|----------|
-| `Procfile` | `worker: python -u bot.py` (loglar kechikmasin) |
-| `runtime.txt` | Python versiyasi |
-| `requirements.txt` | `pip install` |
-| `app.json` | Meta, `heroku-24` stack, `heroku/python` buildpack |
+| `Procfile` | `worker: python -u bot.py` |
+| `.python-version` | Heroku uchun Python `3.12` (rasmiy usul) |
+| `requirements.txt` | Paketlar |
+| `app.json` | `heroku/python` buildpack (meta) |
