@@ -12,10 +12,11 @@ import sys
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.enums import ChatMemberStatus
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -27,6 +28,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import db
+from fsm_storage import SQLiteFSMStorage
 
 load_dotenv()
 
@@ -47,7 +49,84 @@ for part in _ADMIN_RAW.replace(" ", "").split(","):
         ADMIN_IDS.add(int(part))
 
 
+def _truthy_env(key: str, default: str = "1") -> bool:
+    return os.environ.get(key, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+# Obuna tekshiruvi: .env da kanal va/yoki Instagram
+REQUIRE_SUBSCRIPTIONS = _truthy_env("REQUIRE_SUBSCRIPTIONS", "1")
+
+# Loyiha standarti ( env bo‘sh bo‘lsa — shular ishlatiladi )
+DEFAULT_TELEGRAM_CHANNEL = "@sirdaryotexnopark"
+DEFAULT_INSTAGRAM_USERNAME = "guliston_yoshlar_texnoparki"
+
+
+def _env_channel() -> str:
+    v = os.environ.get("TELEGRAM_CHANNEL")
+    if v is None:
+        return DEFAULT_TELEGRAM_CHANNEL
+    return v.strip()
+
+
+def _env_instagram_username() -> str:
+    v = os.environ.get("INSTAGRAM_USERNAME")
+    if v is None:
+        return DEFAULT_INSTAGRAM_USERNAME
+    return v.strip().lstrip("@")
+
+
+def telegram_channel_id_raw() -> str:
+    """@username yoki -100... kanal ID."""
+    return _env_channel()
+
+
+def telegram_channel_open_url() -> str | None:
+    """Kanalga havola (ochiq kanal). Yopiq kanal uchun TELEGRAM_CHANNEL_URL qo‘ying."""
+    explicit = os.environ.get("TELEGRAM_CHANNEL_URL", "").strip()
+    if explicit:
+        return explicit
+    ch = telegram_channel_id_raw()
+    if not ch:
+        return None
+    tail = ch.lstrip("-")
+    if tail.isdigit():
+        return None
+    name = ch.lstrip("@").split("/")[-1]
+    return f"https://t.me/{name}"
+
+
+def instagram_page_url() -> str | None:
+    u = _env_instagram_username()
+    if not u:
+        return None
+    return f"https://www.instagram.com/{u}/"
+
+
+def subscription_targets() -> tuple[bool, bool]:
+    need_tg = bool(telegram_channel_id_raw())
+    need_ig = bool(instagram_page_url())
+    return need_tg, need_ig
+
+
+def subscription_gate_needed() -> bool:
+    if not REQUIRE_SUBSCRIPTIONS:
+        return False
+    need_tg, need_ig = subscription_targets()
+    return bool(need_tg or need_ig)
+
+
+_MEMBER_OK = frozenset(
+    {
+        ChatMemberStatus.CREATOR,
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.MEMBER,
+        ChatMemberStatus.RESTRICTED,
+    }
+)
+
+
 class Survey(StatesGroup):
+    subscriptions = State()
     otm = State()
     full_name = State()
     phone = State()
@@ -72,8 +151,9 @@ BOT_ABOUT_DESCRIPTION = (
     "• Avval OTM (universitet) tanlaysiz, keyin ism+familiya, telefon va muammo.\n"
     "• Startap tushunchasiga kirish va g‘oya bosqichini tushunish uchun.\n"
     "• Topshirgach sizga 2 xonali kod beriladi (masalan, charxpalak).\n"
-    "• Ma’lumot texnopark adminiga boradi; ular qabul yoki rad qiladi.\n\n"
-    "/start — boshlash · /yangi — qayta topshirish · /cancel — bekor."
+    "• Ma’lumot texnopark adminiga boradi; ular qabul yoki rad qiladi.\n"
+    "• Dastlab Telegram kanali va Instagram (sozlangan bo‘lsa) obuna qadami bo‘lishi mumkin.\n\n"
+    "/start — boshlash · /yangi — qayta topshirish · /cancel — bekor · /help — buyruqlar."
 )
 
 
@@ -127,6 +207,111 @@ WELCOME_INTRO = (
 )
 
 
+def subscription_banner_html(tg_ok: bool, ig_ok: bool, need_tg: bool, need_ig: bool) -> str:
+    """Obuna bosqichi: inline ustida chiroyli HTML blok."""
+    lines: list[str] = [
+        "╔══════════════════════════════════╗",
+        "║ 📣 <b>Ijtimoiy tarmoqlar</b>      ║",
+        "╚══════════════════════════════════╝",
+        "",
+        "<blockquote><i>Anketadan oldin texnopark kanali va Instagram sahifamizga "
+        "qo‘shiling — yangiliklar shu yerda.</i></blockquote>",
+        "",
+    ]
+    if need_tg:
+        mark = "✅" if tg_ok else "▫️"
+        lines.append(f"{mark} <b>Telegram kanal</b> — e’lonlar va uchrashuvlar")
+    if need_ig:
+        mark = "✅" if ig_ok else "▫️"
+        lines.append(f"{mark} <b>Instagram</b> — foto, reel va lavhalar")
+    lines.extend(
+        [
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "<i>Havola → kanal/Instagram; keyin «Tekshirish» / «Tasdiqlash».</i>",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_subscription_keyboard(data: dict) -> InlineKeyboardMarkup:
+    """Ikki qator: Telegram | Instagram — URL + tekshirish (inline)."""
+    need_tg, need_ig = subscription_targets()
+    tg_ok = bool(data.get("sub_tg_ok"))
+    ig_ok = bool(data.get("sub_ig_ok"))
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if need_tg:
+        row: list[InlineKeyboardButton] = []
+        url = telegram_channel_open_url()
+        if url:
+            row.append(InlineKeyboardButton(text="📢 Kanal · ochish", url=url))
+        if tg_ok:
+            row.append(InlineKeyboardButton(text="✅ Telegram · tayyor", callback_data="sub:noop"))
+        else:
+            row.append(
+                InlineKeyboardButton(text="🔍 Telegram · tekshirish", callback_data="sub:verify_tg")
+            )
+        rows.append(row)
+
+    if need_ig:
+        ig_url = instagram_page_url()
+        row = []
+        if ig_url:
+            row.append(InlineKeyboardButton(text="📷 Instagram · ochish", url=ig_url))
+        if ig_ok:
+            row.append(InlineKeyboardButton(text="✅ Instagram · tayyor", callback_data="sub:noop"))
+        else:
+            row.append(
+                InlineKeyboardButton(text="🔍 Instagram · tasdiqlash", callback_data="sub:confirm_ig")
+            )
+        rows.append(row)
+
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def refresh_subscription_message(query: CallbackQuery, state: FSMContext) -> None:
+    if not query.message:
+        return
+    data = await state.get_data()
+    need_tg, need_ig = subscription_targets()
+    text = subscription_banner_html(
+        bool(data.get("sub_tg_ok")),
+        bool(data.get("sub_ig_ok")),
+        need_tg,
+        need_ig,
+    )
+    kb = build_subscription_keyboard(data)
+    try:
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except TelegramBadRequest as e:
+        log.warning("Obuna xabarini yangilab bo'lmadi: %s", e)
+
+
+async def try_advance_subscription(query: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    need_tg, need_ig = subscription_targets()
+    tg_ok = (not need_tg) or bool(data.get("sub_tg_ok"))
+    ig_ok = (not need_ig) or bool(data.get("sub_ig_ok"))
+    if not (tg_ok and ig_ok) or not query.message:
+        return
+    try:
+        await query.message.edit_text(
+            subscription_banner_html(True, True, need_tg, need_ig)
+            + "\n\n<b>✅ Rahmat!</b> Keyingi qadam — OTM tanlash.",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except TelegramBadRequest:
+        pass
+    await state.set_state(Survey.otm)
+    await query.message.answer(
+        WELCOME_INTRO,
+        parse_mode="Markdown",
+        reply_markup=otm_reply_markup(),
+    )
+
+
 def build_admin_notification_html(
     row_id: int,
     code: str,
@@ -177,8 +362,18 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             parse_mode="Markdown",
         )
         return
-    await state.set_state(Survey.otm)
+    await state.clear()
     await state.set_data({})
+    if subscription_gate_needed():
+        await state.set_state(Survey.subscriptions)
+        need_tg, need_ig = subscription_targets()
+        await message.answer(
+            subscription_banner_html(False, False, need_tg, need_ig),
+            parse_mode="HTML",
+            reply_markup=build_subscription_keyboard(await state.get_data()),
+        )
+        return
+    await state.set_state(Survey.otm)
     await message.answer(
         WELCOME_INTRO,
         parse_mode="Markdown",
@@ -186,11 +381,44 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.message(Command("help"))
+async def cmd_help(message: Message) -> None:
+    admin_part = ""
+    if message.from_user and is_admin(message.from_user.id):
+        admin_part = (
+            "\n*Admin*\n"
+            "/kutilayotgan — kutilayotgan arizalar\n"
+            "/statistika — sonlar (pending / qabul / rad)\n"
+            "/qabul_kodlari — charxpalak uchun qabul qilingan kodlar\n"
+        )
+    await message.answer(
+        "📖 *Guliston Yoshlar Texnoparki — buyruqlar*\n\n"
+        "*Hamma uchun*\n"
+        "/start — anketa boshlash (agar sozlangan bo‘lsa — avval Telegram/Instagram obunasi)\n"
+        "→ OTM → ism+familiya → telefon → muammo\n"
+        "/yangi — yangi sessiya (qayta topshirish)\n"
+        "/cancel — anketa jarayonini bekor qilish\n"
+        "/help — shu ro‘yxat"
+        + admin_part,
+        parse_mode="Markdown",
+    )
+
+
 @router.message(Command("yangi"))
 async def cmd_yangi(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await state.set_state(Survey.otm)
     await state.set_data({})
+    if subscription_gate_needed():
+        await state.set_state(Survey.subscriptions)
+        need_tg, need_ig = subscription_targets()
+        await message.answer(
+            "🔄 <b>Yangi sessiya!</b> Avval obuna bosqichi — keyin anketa.\n\n"
+            + subscription_banner_html(False, False, need_tg, need_ig),
+            parse_mode="HTML",
+            reply_markup=build_subscription_keyboard(await state.get_data()),
+        )
+        return
+    await state.set_state(Survey.otm)
     await message.answer(
         "🔄 *Yangi sessiya!* 🎊 Oldingi qog‘oz uchdi — keling, qaytadan boshlaylik.\n\n"
         + WELCOME_INTRO,
@@ -199,12 +427,69 @@ async def cmd_yangi(message: Message, state: FSMContext) -> None:
     )
 
 
+@router.callback_query(F.data == "sub:noop", StateFilter(Survey.subscriptions))
+async def sub_noop(query: CallbackQuery) -> None:
+    await query.answer()
+
+
+@router.callback_query(F.data == "sub:verify_tg", StateFilter(Survey.subscriptions))
+async def sub_verify_tg(query: CallbackQuery, state: FSMContext) -> None:
+    ch = telegram_channel_id_raw()
+    if not ch:
+        await query.answer("Kanal .env da sozlanmagan.", show_alert=True)
+        return
+    if not query.from_user:
+        await query.answer()
+        return
+    try:
+        member = await query.bot.get_chat_member(chat_id=ch, user_id=query.from_user.id)
+    except TelegramBadRequest as e:
+        log.warning("get_chat_member xato (%s): %s", ch, e)
+        await query.answer(
+            "Kanalni tekshirib bo‘lmadi. Botni kanalga admin qiling (oderator).",
+            show_alert=True,
+        )
+        return
+    if member.status not in _MEMBER_OK:
+        await query.answer(
+            "Kanalda obuna yo‘q. Avval «Kanal · ochish», keyin kanalda Qo‘shilish tugmasini bosing.",
+            show_alert=True,
+        )
+        return
+    await state.update_data(sub_tg_ok=True)
+    await query.answer("✅ Telegram kanali tekshirildi!")
+    await refresh_subscription_message(query, state)
+    await try_advance_subscription(query, state)
+
+
+@router.callback_query(F.data == "sub:confirm_ig", StateFilter(Survey.subscriptions))
+async def sub_confirm_ig(query: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(sub_ig_ok=True)
+    await query.answer("✅ Instagram tasdiqlandi!")
+    await refresh_subscription_message(query, state)
+    await try_advance_subscription(query, state)
+
+
+@router.callback_query(F.data.startswith("sub:"))
+async def sub_callback_stale(query: CallbackQuery) -> None:
+    await query.answer("Bu menyu eskirgan. /start yoki /yangi.", show_alert=True)
+
+
 @router.message(Command("cancel"), StateFilter(Survey))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "🙌 Jarayon bekor qilindi. Qayta boshlash uchun */start* — biz har doim shu yerdamiz.",
         parse_mode="Markdown",
+    )
+
+
+@router.message(StateFilter(Survey.subscriptions), F.text)
+async def on_subscription_chat(message: Message, state: FSMContext) -> None:
+    await message.answer(
+        "👆 Iltimos, <b>yuqoridagi inline tugmalar</b> orqali davom eting — "
+        "matn yozish shart emas.",
+        parse_mode="HTML",
     )
 
 
@@ -429,6 +714,51 @@ async def cmd_kutilayotgan(message: Message) -> None:
     )
 
 
+@router.message(Command("statistika"))
+async def cmd_statistika(message: Message) -> None:
+    if not message.from_user or not is_admin(message.from_user.id):
+        await message.answer("Sizda admin huquqi yo'q.")
+        return
+    counts = await db.status_counts()
+    pending = counts.get("pending", 0)
+    accepted = counts.get("accepted", 0)
+    rejected = counts.get("rejected", 0)
+    total = pending + accepted + rejected
+    await message.answer(
+        "📊 <b>Statistika</b>\n\n"
+        f"Jami arizalar: <b>{total}</b>\n"
+        f"⏳ Kutilmoqda: <b>{pending}</b>\n"
+        f"✅ Qabul qilingan: <b>{accepted}</b>\n"
+        f"❌ Rad etilgan: <b>{rejected}</b>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("qabul_kodlari"))
+async def cmd_qabul_kodlari(message: Message) -> None:
+    if not message.from_user or not is_admin(message.from_user.id):
+        await message.answer("Sizda admin huquqi yo'q.")
+        return
+    rows = await db.list_by_status("accepted", limit=100)
+    if not rows:
+        await message.answer(
+            "Hozircha <b>qabul qilingan</b> ariza yo‘q.",
+            parse_mode="HTML",
+        )
+        return
+    lines = []
+    for r in rows:
+        otm_s = html.escape((r.get("otm") or "")[:50])
+        name = html.escape(f"{r.get('ism', '')} {r.get('familya', '')}".strip())
+        code = html.escape(str(r.get("code", "")))
+        lines.append(f"<code>{code}</code> · #{r['id']} · {name}\n   🏛 {otm_s or '—'}")
+    await message.answer(
+        "🎯 <b>Qabul qilinganlar — muammo kodlari</b> "
+        "<i>(charxpalak / ro‘yxat; oxirgi 100)</i>\n\n" + "\n\n".join(lines),
+        parse_mode="HTML",
+    )
+
+
 _cb_re = re.compile(r"^(acc|rej):(\d+)$")
 
 
@@ -503,7 +833,7 @@ async def on_admin_callback(query: CallbackQuery) -> None:
 async def main() -> None:
     await db.init_db()
     bot = Bot(BOT_TOKEN)
-    dp = Dispatcher(storage=MemoryStorage())
+    dp = Dispatcher(storage=SQLiteFSMStorage())
     dp.include_router(router)
 
     logo_path = Path(__file__).resolve().parent / "assets" / "bot_logo.png"
@@ -540,6 +870,12 @@ async def main() -> None:
             log.warning("Logo fayli topilmadi: %s", logo_path)
 
     log.info("Bot ishga tushmoqda (aiogram)...")
+    if REQUIRE_SUBSCRIPTIONS:
+        log.info(
+            "Obuna qadami: kanal=%s · Instagram=%s",
+            telegram_channel_id_raw(),
+            _env_instagram_username() or "—",
+        )
     await dp.start_polling(bot, on_startup=on_startup)
 
 

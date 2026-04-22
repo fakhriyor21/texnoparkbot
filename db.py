@@ -12,6 +12,15 @@ async def init_db() -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
+            CREATE TABLE IF NOT EXISTS fsm_state (
+                sk TEXT PRIMARY KEY NOT NULL,
+                state TEXT,
+                data_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS submissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_user_id INTEGER NOT NULL,
@@ -110,6 +119,35 @@ async def list_pending():
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
             "SELECT * FROM submissions WHERE status = 'pending' ORDER BY id ASC"
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def status_counts() -> dict[str, int]:
+    async with aiosqlite.connect(DB_PATH) as db_c:
+        cur = await db_c.execute(
+            "SELECT status, COUNT(*) FROM submissions GROUP BY status"
+        )
+        rows = await cur.fetchall()
+        out: dict[str, int] = {}
+        for status, n in rows:
+            out[str(status)] = int(n)
+        return out
+
+
+async def list_by_status(status: str, *, limit: int = 100):
+    lim = max(1, min(limit, 500))
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            """
+            SELECT * FROM submissions
+            WHERE status = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (status, lim),
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]

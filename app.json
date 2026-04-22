@@ -1,19 +1,31 @@
 {
-  "name": "Guliston Texnopark Bot",
+  "name": "texnopark-bot",
   "description": "Guliston Yoshlar Texnoparki — Telegram anketa boti (aiogram)",
-  "repository": "https://github.com/fakhriyor21/texnoparkbot",
   "keywords": ["telegram", "bot", "aiogram", "python"],
-  "buildpacks": [
-    { "url": "heroku/python" }
-  ],
+  "buildpacks": [{ "url": "heroku/python" }],
   "env": {
     "BOT_TOKEN": {
-      "description": "@BotFather dan olingan bot token",
+      "description": "@BotFather token",
       "required": true
     },
     "ADMIN_IDS": {
-      "description": "Admin Telegram ID (bir nechta bo'lsa vergul bilan: 111,222)",
+      "description": "Admin Telegram user ID (vergul bilan bir nechta)",
       "required": true
+    },
+    "REQUIRE_SUBSCRIPTIONS": {
+      "description": "1 = obuna bosqichi",
+      "value": "1",
+      "required": false
+    },
+    "TELEGRAM_CHANNEL": {
+      "description": "Kanal @username (default: @sirdaryotexnopark)",
+      "value": "@sirdaryotexnopark",
+      "required": false
+    },
+    "INSTAGRAM_USERNAME": {
+      "description": "Instagram username (default: guliston_yoshlar_texnoparki)",
+      "value": "guliston_yoshlar_texnoparki",
+      "required": false
     }
   }
 }
